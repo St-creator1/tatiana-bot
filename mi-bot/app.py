@@ -37,7 +37,7 @@ class ApiKeyManager:
             logging.warning(f"🔄 Cambiando a la API key número {self.current_index + 1}")
         return self.get_current_client()
 
-# --- INICIALIZAR COHERE CON ROTACIÓN ---
+# --- INICIALIZAR COHERE ---
 cohere_api_keys_env = os.getenv("COHERE_API_KEYS", "")
 cohere_keys = [k.strip() for k in cohere_api_keys_env.split(",") if k.strip()]
 if not cohere_keys:
@@ -61,6 +61,7 @@ def init_db():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            # Crear tabla si no existe
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_histories (
                     user_id VARCHAR(255) PRIMARY KEY,
@@ -70,7 +71,23 @@ def init_db():
                 );
             """)
             conn.commit()
-        logging.info("Tabla 'conversation_histories' lista.")
+
+            # Asegurar que la columna memories existe
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='conversation_histories' AND column_name='memories'
+                    ) THEN
+                        ALTER TABLE conversation_histories ADD COLUMN memories JSONB DEFAULT '[]';
+                    END IF;
+                END
+                $$;
+            """)
+            conn.commit()
+
+        logging.info("Tabla 'conversation_histories' lista con columna memories.")
     finally:
         conn.close()
 
@@ -102,6 +119,13 @@ MODOS = ["timido", "atrevido"]
 class BotConfig:
     IGNORED_USERS = ["game of thrones"]
     FORBIDDEN_WORDS = ["sexi", "hago"]
+
+    # 🚫 Palabras relacionadas con redes sociales
+    FORBIDDEN_SOCIALS = [
+        "facebook", "instagram", "tiktok", "whatsapp",
+        "snapchat", "telegram", "twitter", "x.com",
+        "messenger", "reddit", "discord"
+    ]
 
     PREDEFINED_RESPONSES = {
         "[Recordatorio en línea]": "Hola cielo como estas",
@@ -144,7 +168,6 @@ def humanize_text(text):
 
 # --- MEMORIA ---
 def update_memories(user_session, user_message):
-    """Detecta detalles clave en el mensaje del usuario y los guarda."""
     lower_msg = user_message.lower()
     memories = user_session.get("memories", [])
 
@@ -162,7 +185,7 @@ def update_memories(user_session, user_message):
 
 def recall_memory(user_session):
     memories = user_session.get("memories", [])
-    if memories and random.random() < 0.4:  # 40% chance
+    if memories and random.random() < 0.4:
         return random.choice(memories)
     return None
 
@@ -203,18 +226,27 @@ def save_user_history(user_id, session_data):
     finally:
         conn.close()
 
+# --- FIREWALL ---
 def contains_forbidden_word(text):
     text_lower = text.lower()
+
+    # Palabras prohibidas
     for word in BotConfig.FORBIDDEN_WORDS:
         if re.search(r'\b' + re.escape(word) + r'\b', text_lower):
             logging.warning(f"🚨 Palabra prohibida detectada: '{word}' en '{text}'")
             return True
+
+    # 🚫 Redes sociales
+    for social in BotConfig.FORBIDDEN_SOCIALS:
+        if social in text_lower:
+            logging.warning(f"🚨 Red social detectada: '{social}' en '{text}'")
+            return True
+
     return False
 
 def handle_system_message(message):
     for trigger, response in BotConfig.PREDEFINED_RESPONSES.items():
         if trigger in message:
-            logging.info(f"⚡ Disparador detectado: '{trigger}' → respuesta predefinida.")
             return response
     return None
 
@@ -241,11 +273,9 @@ def generate_ia_response(user_id, user_message, user_session):
             temperature=0.85
         )
         ia_reply = response.text.strip()
-    except NotFoundError as e:
-        logging.error(f"Modelo no encontrado: {e}")
+    except NotFoundError:
         ia_reply = "ese modelo ya no está 😅"
-    except Exception as e:
-        logging.error(f"Error Cohere: {e}, rotando key...")
+    except Exception:
         try:
             current_cohere_client = key_manager.rotate_to_next_key()
             response = current_cohere_client.chat(
@@ -256,34 +286,21 @@ def generate_ia_response(user_id, user_message, user_session):
                 temperature=0.85
             )
             ia_reply = response.text.strip()
-        except Exception as e2:
-            logging.error(f"Error tras rotar key: {e2}")
+        except Exception:
             ia_reply = "mmm fallo algo jeje 😅"
 
-    # --- Ajustes estilo ---
     ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)
-    is_repeat = (ia_reply and ia_reply == last_bot_message)
-    if not ia_reply or is_repeat or contains_forbidden_word(ia_reply):
+    if not ia_reply or ia_reply == last_bot_message or contains_forbidden_word(ia_reply):
         ia_reply = random.choice(["jeje sii", "ok", "dale", "mmm bueno"])
 
-    # --- Pregunta cada 3 msgs ---
     chatbot_msgs = [m for m in user_session["history"] if m["role"] == "CHATBOT"]
     if len(chatbot_msgs) > 0 and len(chatbot_msgs) % 3 == 0:
         q = random.choice(NATURAL_QUESTIONS)
-        tries = 0
-        while q in last_questions and tries < 5:
-            q = random.choice(NATURAL_QUESTIONS)
-            tries += 1
-        last_questions.append(q)
-        if len(last_questions) > 5:
-            last_questions.pop(0)
         ia_reply += " " + humanize_text(q)
 
-    # --- Humanizar chance ---
     if random.random() < 0.4:
         ia_reply = humanize_text(ia_reply)
 
-    # --- Modo timido / atrevido ---
     modo = random.choice(MODOS)
     if modo == "timido":
         if random.random() < 0.4:
@@ -292,30 +309,20 @@ def generate_ia_response(user_id, user_message, user_session):
         if random.random() < 0.5:
             ia_reply += " " + random.choice(["y si me cuentas mas 😉", "me gusta como hablas 😏", "quiero saber mas 🔥"])
 
-    # --- Memoria ---
     update_memories(user_session, user_message)
     memory = recall_memory(user_session)
     if memory:
         ia_reply += f" (recuerdo q me dijiste q {memory})"
 
-    # --- Evitar duplicados globales ---
     if ia_reply in last_global_replies:
         ia_reply = random.choice(["ajaj sii", "dalee", "okey", "mmm bueno", "yaa jeje"])
     last_global_replies.add(ia_reply)
     if len(last_global_replies) > 20:
         last_global_replies.pop()
 
-    # --- Emojis ---
     should_have_emoji = not user_session.get("emoji_last_message", False)
     if should_have_emoji:
         emoji_choice = random.choice(RANDOM_EMOJIS)
-        tries = 0
-        while emoji_choice in last_emojis and tries < 5:
-            emoji_choice = random.choice(RANDOM_EMOJIS)
-            tries += 1
-        last_emojis.append(emoji_choice)
-        if len(last_emojis) > 5:
-            last_emojis.pop(0)
         if not contains_emoji(ia_reply):
             ia_reply += emoji_choice
         user_session["emoji_last_message"] = True
