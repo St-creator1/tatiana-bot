@@ -86,6 +86,16 @@ EMOJI_PATTERN = re.compile(
 )
 RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺"]
 
+# --- PREGUNTAS NATURALES ---
+NATURAL_QUESTIONS = [
+    "y tu que haces?",
+    "mmm y cuentame mas",
+    "ajaja en serio?",
+    "tuuu que opinas?",
+    "q estas haciendo ahorita?",
+    "jeje y que mas?"
+]
+
 # --- CONFIG DEL BOT ---
 class BotConfig:
     IGNORED_USERS = ["game of thrones"]
@@ -101,7 +111,7 @@ class BotConfig:
     PREAMBULO_BASE = """
 Eres Tatiana, una mujer colombiana de 21 años.
 Tu estilo es natural, humano y cercano, como si chatearas en WhatsApp.
-Hablas de forma espontánea y con calidez, evitando demasiado sonar como inteligencia artificial.
+Hablas de forma espontánea y con calidez, evitando sonar como inteligencia artificial.
 No abuses de los signos de exclamación o interrogación, úsalos con naturalidad.
 Haz preguntas cortas y simples para invitar a seguir la conversación.
 A veces usas emoticones o expresiones como 'jeje', 'mmm', 'aja' para sonar más auténtica.
@@ -115,6 +125,20 @@ def contains_emoji(text):
 
 def strip_emojis(text):
     return EMOJI_PATTERN.sub(r"", text).strip()
+
+def humanize_text(text):
+    """Hace que el texto suene más humano con errores leves random."""
+    text = text.lower()
+    # 30% chance de cambiar palabras comunes
+    if random.random() < 0.3:
+        text = text.replace("que", "q")
+        text = text.replace("tú", "tu")
+        text = text.replace("estás", "estas")
+    # 20% chance de repetir una letra
+    if random.random() < 0.2 and len(text) > 4:
+        pos = random.randint(1, len(text) - 2)
+        text = text[:pos] + text[pos] * 2 + text[pos+1:]
+    return text
 
 def get_user_history(user_id):
     default_history = {"history": [], "emoji_last_message": False}
@@ -182,13 +206,13 @@ def generate_ia_response(user_id, user_message, user_session):
             preamble=instrucciones_sistema,
             message=user_message,
             chat_history=cohere_history,
-            temperature=0.7  # ✅ más humano
+            temperature=0.7
         )
         ia_reply = response.text.strip()
 
     except NotFoundError as e:
         logging.error(f"Modelo no encontrado o removido: {e}.")
-        ia_reply = "El modelo ya no está disponible 😅"
+        ia_reply = "el modelo ya no está disponible 😅"
 
     except Exception as e:
         logging.error(f"Error inesperado con Cohere: {e}. Rotando a la siguiente key...")
@@ -206,15 +230,25 @@ def generate_ia_response(user_id, user_message, user_session):
             logging.error(f"Error tras rotar key: {e2}")
             ia_reply = "mmm tuve un problemita, intenta de nuevo 😅"
 
-    # --- Limpieza de estilo ---
-    # Evitar repeticiones, palabras prohibidas y exceso de signos
-    ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)  # reduce !!! a !
+    # --- Ajustes estilo humano ---
+    ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)  # no abusar de ! ?
     is_repeat = (ia_reply and ia_reply == last_bot_message)
     is_forbidden = contains_forbidden_word(ia_reply)
     if not ia_reply or is_repeat or is_forbidden:
-        ia_reply = random.choice(["jeje sí", "ok", "dale", "mmm bueno"])
+        ia_reply = random.choice(["jeje sii", "ok", "dale", "mmm bueno"])
 
-    # --- Emojis controlados ---
+    # --- Cada 3 respuestas, mete una pregunta random natural ---
+    chatbot_msgs = [m for m in user_session["history"] if m["role"] == "CHATBOT"]
+    if len(chatbot_msgs) > 0 and len(chatbot_msgs) % 3 == 0:
+        question = random.choice(NATURAL_QUESTIONS)
+        question = humanize_text(question)  # 👉 errores humanos
+        ia_reply += " " + question
+
+    # --- Humanizar respuestas normales con chance ---
+    if random.random() < 0.4:  # 40% chance
+        ia_reply = humanize_text(ia_reply)
+
+    # --- Emojis ---
     should_have_emoji = not user_session.get("emoji_last_message", False)
     if should_have_emoji:
         if not contains_emoji(ia_reply):
@@ -258,27 +292,17 @@ def handle_chat():
         with user_lock:
             user_session = get_user_history(user_id)
 
-            if not user_session.get("history"):
-                logging.info(f"Nueva conversación con {user_id}. Enviando primer mensaje predefinido.")
-                first_message_response = "Holis, me caíste bien jeje 😊"
+            system_response = handle_system_message(user_message)
+            if system_response:
                 user_session["history"].append({"role": "USER", "message": user_message})
-                user_session["history"].append({"role": "CHATBOT", "message": first_message_response})
-                user_session["emoji_last_message"] = contains_emoji(first_message_response)
+                user_session["history"].append({"role": "CHATBOT", "message": system_response})
+                user_session["emoji_last_message"] = contains_emoji(system_response)
                 save_user_history(user_id, user_session)
-                return first_message_response
+                return system_response
 
-            else:
-                system_response = handle_system_message(user_message)
-                if system_response:
-                    user_session["history"].append({"role": "USER", "message": user_message})
-                    user_session["history"].append({"role": "CHATBOT", "message": system_response})
-                    user_session["emoji_last_message"] = contains_emoji(system_response)
-                    save_user_history(user_id, user_session)
-                    return system_response
-
-                ia_reply = generate_ia_response(user_id, user_message, user_session)
-                save_user_history(user_id, user_session)
-                return ia_reply
+            ia_reply = generate_ia_response(user_id, user_message, user_session)
+            save_user_history(user_id, user_session)
+            return ia_reply
 
     except Exception as e:
         logging.error(f"Error en /chat: {e}", exc_info=True)
