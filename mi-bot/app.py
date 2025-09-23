@@ -65,11 +65,12 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS conversation_histories (
                     user_id VARCHAR(255) PRIMARY KEY,
                     history JSONB,
-                    emoji_last_message BOOLEAN DEFAULT FALSE
+                    emoji_last_message BOOLEAN DEFAULT FALSE,
+                    memories JSONB DEFAULT '[]'
                 );
             """)
             conn.commit()
-        logging.info("Tabla 'conversation_histories' verificada/creada exitosamente.")
+        logging.info("Tabla 'conversation_histories' lista.")
     finally:
         conn.close()
 
@@ -86,7 +87,6 @@ EMOJI_PATTERN = re.compile(
 )
 RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺"]
 
-# --- PREGUNTAS NATURALES ---
 NATURAL_QUESTIONS = [
     "y tu que haces?",
     "mmm y cuentame mas",
@@ -95,6 +95,8 @@ NATURAL_QUESTIONS = [
     "q estas haciendo ahorita?",
     "jeje y que mas?"
 ]
+
+MODOS = ["timido", "atrevido"]
 
 # --- CONFIG DEL BOT ---
 class BotConfig:
@@ -119,7 +121,12 @@ Responde en frases muy cortas, no más de 15 palabras, como en un chat real.
 Nunca pidas dinero ni regalos.
 """
 
-# --- FUNCIONES AUXILIARES ---
+# --- TRACK GLOBAL ---
+last_global_replies = set()
+last_questions = []
+last_emojis = []
+
+# --- FUNCIONES AUX ---
 def contains_emoji(text):
     return EMOJI_PATTERN.search(text) is not None
 
@@ -127,32 +134,52 @@ def strip_emojis(text):
     return EMOJI_PATTERN.sub(r"", text).strip()
 
 def humanize_text(text):
-    """Hace que el texto suene más humano con errores leves random."""
     text = text.lower()
-    # 30% chance de cambiar palabras comunes
     if random.random() < 0.3:
-        text = text.replace("que", "q")
-        text = text.replace("tú", "tu")
-        text = text.replace("estás", "estas")
-    # 20% chance de repetir una letra
+        text = text.replace("que", "q").replace("tú", "tu").replace("estás", "estas")
     if random.random() < 0.2 and len(text) > 4:
         pos = random.randint(1, len(text) - 2)
         text = text[:pos] + text[pos] * 2 + text[pos+1:]
     return text
 
+# --- MEMORIA ---
+def update_memories(user_session, user_message):
+    """Detecta detalles clave en el mensaje del usuario y los guarda."""
+    lower_msg = user_message.lower()
+    memories = user_session.get("memories", [])
+
+    if "me gusta" in lower_msg:
+        detalle = user_message.split("me gusta", 1)[1].strip()
+        memories.append(f"le gusta {detalle}")
+    if "soy de" in lower_msg:
+        detalle = user_message.split("soy de", 1)[1].strip()
+        memories.append(f"es de {detalle}")
+    if "trabajo en" in lower_msg:
+        detalle = user_message.split("trabajo en", 1)[1].strip()
+        memories.append(f"trabaja en {detalle}")
+
+    user_session["memories"] = memories[-5:]
+
+def recall_memory(user_session):
+    memories = user_session.get("memories", [])
+    if memories and random.random() < 0.4:  # 40% chance
+        return random.choice(memories)
+    return None
+
+# --- DB ---
 def get_user_history(user_id):
-    default_history = {"history": [], "emoji_last_message": False}
+    default_history = {"history": [], "emoji_last_message": False, "memories": []}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT history, emoji_last_message FROM conversation_histories WHERE user_id = %s;",
+                "SELECT history, emoji_last_message, memories FROM conversation_histories WHERE user_id = %s;",
                 (user_id,)
             )
             result = cur.fetchone()
             if result:
-                history_data, emoji_last = result
-                return {"history": history_data, "emoji_last_message": emoji_last}
+                history_data, emoji_last, memories = result
+                return {"history": history_data, "emoji_last_message": emoji_last, "memories": memories or []}
             return default_history
     finally:
         conn.close()
@@ -162,11 +189,14 @@ def save_user_history(user_id, session_data):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO conversation_histories (user_id, history, emoji_last_message)
-                VALUES (%s, %s, %s)
+                INSERT INTO conversation_histories (user_id, history, emoji_last_message, memories)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (user_id)
-                DO UPDATE SET history = EXCLUDED.history, emoji_last_message = EXCLUDED.emoji_last_message;
-            """, (user_id, json.dumps(session_data["history"]), session_data["emoji_last_message"]))
+                DO UPDATE SET history = EXCLUDED.history,
+                              emoji_last_message = EXCLUDED.emoji_last_message,
+                              memories = EXCLUDED.memories;
+            """, (user_id, json.dumps(session_data["history"]),
+                  session_data["emoji_last_message"], json.dumps(session_data["memories"])))
             conn.commit()
     except Exception as e:
         logging.error(f"No se pudo guardar historial en la DB: {e}")
@@ -177,25 +207,27 @@ def contains_forbidden_word(text):
     text_lower = text.lower()
     for word in BotConfig.FORBIDDEN_WORDS:
         if re.search(r'\b' + re.escape(word) + r'\b', text_lower):
-            logging.warning(f"FIREWALL: Palabra prohibida detectada: '{word}' en el texto: '{text}'")
+            logging.warning(f"🚨 Palabra prohibida detectada: '{word}' en '{text}'")
             return True
     return False
 
 def handle_system_message(message):
     for trigger, response in BotConfig.PREDEFINED_RESPONSES.items():
         if trigger in message:
-            logging.info(f"SYSTEM_TRIGGER: Se detectó la frase '{trigger}'. Respondiendo con un mensaje predefinido.")
+            logging.info(f"⚡ Disparador detectado: '{trigger}' → respuesta predefinida.")
             return response
     return None
 
-# --- GENERAR RESPUESTA CON COHERE ---
+# --- IA ---
 def generate_ia_response(user_id, user_message, user_session):
+    global last_global_replies, last_questions, last_emojis
+
     instrucciones_sistema = BotConfig.PREAMBULO_BASE
     cohere_history = []
     for msg in user_session.get("history", []):
         role = "USER" if msg.get("role") == "USER" else "CHATBOT"
         cohere_history.append({"role": role, "message": msg.get("message", "")})
-    last_bot_message = next((msg["message"] for msg in reversed(cohere_history) if msg["role"] == "CHATBOT"), None)
+    last_bot_message = next((m["message"] for m in reversed(cohere_history) if m["role"] == "CHATBOT"), None)
 
     ia_reply = ""
 
@@ -206,16 +238,14 @@ def generate_ia_response(user_id, user_message, user_session):
             preamble=instrucciones_sistema,
             message=user_message,
             chat_history=cohere_history,
-            temperature=0.7
+            temperature=0.85
         )
         ia_reply = response.text.strip()
-
     except NotFoundError as e:
-        logging.error(f"Modelo no encontrado o removido: {e}.")
-        ia_reply = "el modelo ya no está disponible 😅"
-
+        logging.error(f"Modelo no encontrado: {e}")
+        ia_reply = "ese modelo ya no está 😅"
     except Exception as e:
-        logging.error(f"Error inesperado con Cohere: {e}. Rotando a la siguiente key...")
+        logging.error(f"Error Cohere: {e}, rotando key...")
         try:
             current_cohere_client = key_manager.rotate_to_next_key()
             response = current_cohere_client.chat(
@@ -223,36 +253,71 @@ def generate_ia_response(user_id, user_message, user_session):
                 preamble=instrucciones_sistema,
                 message=user_message,
                 chat_history=cohere_history,
-                temperature=0.7
+                temperature=0.85
             )
             ia_reply = response.text.strip()
         except Exception as e2:
             logging.error(f"Error tras rotar key: {e2}")
-            ia_reply = "mmm tuve un problemita, intenta de nuevo 😅"
+            ia_reply = "mmm fallo algo jeje 😅"
 
-    # --- Ajustes estilo humano ---
-    ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)  # no abusar de ! ?
+    # --- Ajustes estilo ---
+    ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)
     is_repeat = (ia_reply and ia_reply == last_bot_message)
-    is_forbidden = contains_forbidden_word(ia_reply)
-    if not ia_reply or is_repeat or is_forbidden:
+    if not ia_reply or is_repeat or contains_forbidden_word(ia_reply):
         ia_reply = random.choice(["jeje sii", "ok", "dale", "mmm bueno"])
 
-    # --- Cada 3 respuestas, mete una pregunta random natural ---
+    # --- Pregunta cada 3 msgs ---
     chatbot_msgs = [m for m in user_session["history"] if m["role"] == "CHATBOT"]
     if len(chatbot_msgs) > 0 and len(chatbot_msgs) % 3 == 0:
-        question = random.choice(NATURAL_QUESTIONS)
-        question = humanize_text(question)  # 👉 errores humanos
-        ia_reply += " " + question
+        q = random.choice(NATURAL_QUESTIONS)
+        tries = 0
+        while q in last_questions and tries < 5:
+            q = random.choice(NATURAL_QUESTIONS)
+            tries += 1
+        last_questions.append(q)
+        if len(last_questions) > 5:
+            last_questions.pop(0)
+        ia_reply += " " + humanize_text(q)
 
-    # --- Humanizar respuestas normales con chance ---
-    if random.random() < 0.4:  # 40% chance
+    # --- Humanizar chance ---
+    if random.random() < 0.4:
         ia_reply = humanize_text(ia_reply)
+
+    # --- Modo timido / atrevido ---
+    modo = random.choice(MODOS)
+    if modo == "timido":
+        if random.random() < 0.4:
+            ia_reply += " " + humanize_text(random.choice(["y tu?", "mmm y tu q piensas?", "jeje y tu?"]))
+    elif modo == "atrevido":
+        if random.random() < 0.5:
+            ia_reply += " " + random.choice(["y si me cuentas mas 😉", "me gusta como hablas 😏", "quiero saber mas 🔥"])
+
+    # --- Memoria ---
+    update_memories(user_session, user_message)
+    memory = recall_memory(user_session)
+    if memory:
+        ia_reply += f" (recuerdo q me dijiste q {memory})"
+
+    # --- Evitar duplicados globales ---
+    if ia_reply in last_global_replies:
+        ia_reply = random.choice(["ajaj sii", "dalee", "okey", "mmm bueno", "yaa jeje"])
+    last_global_replies.add(ia_reply)
+    if len(last_global_replies) > 20:
+        last_global_replies.pop()
 
     # --- Emojis ---
     should_have_emoji = not user_session.get("emoji_last_message", False)
     if should_have_emoji:
+        emoji_choice = random.choice(RANDOM_EMOJIS)
+        tries = 0
+        while emoji_choice in last_emojis and tries < 5:
+            emoji_choice = random.choice(RANDOM_EMOJIS)
+            tries += 1
+        last_emojis.append(emoji_choice)
+        if len(last_emojis) > 5:
+            last_emojis.pop(0)
         if not contains_emoji(ia_reply):
-            ia_reply += random.choice(RANDOM_EMOJIS)
+            ia_reply += emoji_choice
         user_session["emoji_last_message"] = True
     else:
         ia_reply = strip_emojis(ia_reply)
@@ -275,23 +340,19 @@ def handle_chat():
         try:
             data = json.loads(cleaned_data_str)
         except json.JSONDecodeError:
-            logging.error(f"Error de decodificación JSON. Datos crudos: '{raw_data}', Limpios: '{cleaned_data_str}'")
             return "Error: Formato JSON inválido.", 400
         user_id = data.get("user_id")
         user_message = data.get("message")
         if not user_id or not user_message:
             return "Error: faltan parámetros", 400
         if user_id.strip().lower() in BotConfig.IGNORED_USERS:
-            logging.info(f"Mensaje de '{user_id}' ignorado.")
             return "Ignorado", 200
         with locks_dict_lock:
             if user_id not in user_locks:
                 user_locks[user_id] = threading.Lock()
             user_lock = user_locks[user_id]
-
         with user_lock:
             user_session = get_user_history(user_id)
-
             system_response = handle_system_message(user_message)
             if system_response:
                 user_session["history"].append({"role": "USER", "message": user_message})
@@ -299,11 +360,9 @@ def handle_chat():
                 user_session["emoji_last_message"] = contains_emoji(system_response)
                 save_user_history(user_id, user_session)
                 return system_response
-
             ia_reply = generate_ia_response(user_id, user_message, user_session)
             save_user_history(user_id, user_session)
             return ia_reply
-
     except Exception as e:
         logging.error(f"Error en /chat: {e}", exc_info=True)
         return "Error en el servidor", 500
