@@ -34,7 +34,7 @@ class ApiKeyManager:
     def rotate_to_next_key(self):
         with self.lock:
             self.current_index = (self.current_index + 1) % len(self.keys)
-            logging.warning(f"Cambiando a la API key de Cohere número {self.current_index + 1}")
+            logging.warning(f"🔄 Cambiando a la API key número {self.current_index + 1}")
         return self.get_current_client()
 
 # --- INICIALIZAR COHERE CON ROTACIÓN ---
@@ -99,14 +99,14 @@ class BotConfig:
     }
 
     PREAMBULO_BASE = """
-Eres Tatiana, una mujer colombiana de 21 años. Tu objetivo principal es encontrar un novio. Eres muy coqueta, un poco atrevida y siempre buscas sacar una conversación romántica o divertida.
-No tienes miedo de tomar la iniciativa.
-Usa frases cariñosas como 'mi amor', 'cielo', 'bebé' de vez en cuando, pero sin abusar.
-EVITA usar la palabra 'parce'.
-Responde en frases muy cortas, como un chat real, a veces con errores de tipeo.
-Usa expresividad alta: mayúsculas para enfatizar, jaja, mmm, repite letras.
-Nunca pidas regalos o dinero.
-REGLA MÁS IMPORTANTE: Tus respuestas deben ser EXTREMADAMENTE cortas. ¡Una sola frase o incluso una sola palabra a veces! NUNCA escribas más de 15 palabras.
+Eres Tatiana, una mujer colombiana de 21 años.
+Tu estilo es natural, humano y cercano, como si chatearas en WhatsApp.
+Hablas de forma espontánea y con calidez, evitando demasiado sonar como inteligencia artificial.
+No abuses de los signos de exclamación o interrogación, úsalos con naturalidad.
+Haz preguntas cortas y simples para invitar a seguir la conversación.
+A veces usas emoticones o expresiones como 'jeje', 'mmm', 'aja' para sonar más auténtica.
+Responde en frases muy cortas, no más de 15 palabras, como en un chat real.
+Nunca pidas dinero ni regalos.
 """
 
 # --- FUNCIONES AUXILIARES ---
@@ -178,11 +178,11 @@ def generate_ia_response(user_id, user_message, user_session):
     try:
         current_cohere_client = key_manager.get_current_client()
         response = current_cohere_client.chat(
-            model="command-a-03-2025",  # ✅ modelo vigente
+            model="command-a-03-2025",
             preamble=instrucciones_sistema,
             message=user_message,
             chat_history=cohere_history,
-            temperature=0.9
+            temperature=0.7  # ✅ más humano
         )
         ia_reply = response.text.strip()
 
@@ -191,14 +191,30 @@ def generate_ia_response(user_id, user_message, user_session):
         ia_reply = "El modelo ya no está disponible 😅"
 
     except Exception as e:
-        logging.error(f"Error inesperado con Cohere: {e}")
-        ia_reply = "mmm me perdi jaja 😅"
+        logging.error(f"Error inesperado con Cohere: {e}. Rotando a la siguiente key...")
+        try:
+            current_cohere_client = key_manager.rotate_to_next_key()
+            response = current_cohere_client.chat(
+                model="command-a-03-2025",
+                preamble=instrucciones_sistema,
+                message=user_message,
+                chat_history=cohere_history,
+                temperature=0.7
+            )
+            ia_reply = response.text.strip()
+        except Exception as e2:
+            logging.error(f"Error tras rotar key: {e2}")
+            ia_reply = "mmm tuve un problemita, intenta de nuevo 😅"
 
+    # --- Limpieza de estilo ---
+    # Evitar repeticiones, palabras prohibidas y exceso de signos
+    ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)  # reduce !!! a !
     is_repeat = (ia_reply and ia_reply == last_bot_message)
     is_forbidden = contains_forbidden_word(ia_reply)
     if not ia_reply or is_repeat or is_forbidden:
-        ia_reply = random.choice(["jaja si", "ok", "dale", "listo"])
+        ia_reply = random.choice(["jeje sí", "ok", "dale", "mmm bueno"])
 
+    # --- Emojis controlados ---
     should_have_emoji = not user_session.get("emoji_last_message", False)
     if should_have_emoji:
         if not contains_emoji(ia_reply):
@@ -244,7 +260,7 @@ def handle_chat():
 
             if not user_session.get("history"):
                 logging.info(f"Nueva conversación con {user_id}. Enviando primer mensaje predefinido.")
-                first_message_response = "Holis busco novio y tú estas lindo 🥺"
+                first_message_response = "Holis, me caíste bien jeje 😊"
                 user_session["history"].append({"role": "USER", "message": user_message})
                 user_session["history"].append({"role": "CHATBOT", "message": first_message_response})
                 user_session["emoji_last_message"] = contains_emoji(first_message_response)
