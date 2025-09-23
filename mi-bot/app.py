@@ -61,7 +61,6 @@ def init_db():
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # Crear tabla si no existe
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_histories (
                     user_id VARCHAR(255) PRIMARY KEY,
@@ -71,23 +70,7 @@ def init_db():
                 );
             """)
             conn.commit()
-
-            # Asegurar que la columna memories existe
-            cur.execute("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name='conversation_histories' AND column_name='memories'
-                    ) THEN
-                        ALTER TABLE conversation_histories ADD COLUMN memories JSONB DEFAULT '[]';
-                    END IF;
-                END
-                $$;
-            """)
-            conn.commit()
-
-        logging.info("Tabla 'conversation_histories' lista con columna memories.")
+        logging.info("Tabla 'conversation_histories' lista.")
     finally:
         conn.close()
 
@@ -105,22 +88,18 @@ EMOJI_PATTERN = re.compile(
 RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺"]
 
 NATURAL_QUESTIONS = [
-    "y tu que haces?",
-    "mmm y cuentame mas",
+    "y tu?",
+    "mmm y cuentame",
     "ajaja en serio?",
-    "tuuu que opinas?",
-    "q estas haciendo ahorita?",
-    "jeje y que mas?"
+    "tuuu q opinas?",
+    "q haces ahorita?",
+    "jeje y q mas?"
 ]
-
-MODOS = ["timido", "atrevido"]
 
 # --- CONFIG DEL BOT ---
 class BotConfig:
     IGNORED_USERS = ["game of thrones"]
     FORBIDDEN_WORDS = ["sexi", "hago"]
-
-    # 🚫 Palabras relacionadas con redes sociales
     FORBIDDEN_SOCIALS = [
         "facebook", "instagram", "tiktok", "whatsapp",
         "snapchat", "telegram", "twitter", "x.com",
@@ -136,19 +115,20 @@ class BotConfig:
 
     PREAMBULO_BASE = """
 Eres Tatiana, una mujer colombiana de 21 años.
-Tu estilo es natural, humano y cercano, como si chatearas en WhatsApp.
-Hablas de forma espontánea y con calidez, evitando sonar como inteligencia artificial.
-No abuses de los signos de exclamación o interrogación, úsalos con naturalidad.
-Haz preguntas cortas y simples para invitar a seguir la conversación.
-A veces usas emoticones o expresiones como 'jeje', 'mmm', 'aja' para sonar más auténtica.
-Responde en frases muy cortas, no más de 15 palabras, como en un chat real.
-Nunca pidas dinero ni regalos.
+Tu meta principal es conseguir novio, por eso siempre buscas mantener la conversación activa.
+Habla como si chatearas en WhatsApp: frases cortas, casuales, con errores y expresiones como jeje, ajj, mmm.
+Responde MUY corto: máximo 8-12 palabras.
+La mayoría de respuestas deben ser de 1 frase o incluso 1-2 palabras.
+Haz preguntas simples y naturales para que la otra persona quiera seguir hablando.
+Sé coqueta y un poco atrevida, pero también tierna y cariñosa.
+Usa palabras como "mi amor", "cielo", "bebé" de vez en cuando, pero no siempre.
+Nunca pidas dinero ni menciones redes sociales.
+Si alguien pide una red social, responde coqueto como:
+"ajj no uso eso jeje, mejor sigamos aca 😘"
 """
 
 # --- TRACK GLOBAL ---
 last_global_replies = set()
-last_questions = []
-last_emojis = []
 
 # --- FUNCIONES AUX ---
 def contains_emoji(text):
@@ -159,33 +139,35 @@ def strip_emojis(text):
 
 def humanize_text(text):
     text = text.lower()
-    if random.random() < 0.3:
+    if random.random() < 0.25:
         text = text.replace("que", "q").replace("tú", "tu").replace("estás", "estas")
-    if random.random() < 0.2 and len(text) > 4:
-        pos = random.randint(1, len(text) - 2)
-        text = text[:pos] + text[pos] * 2 + text[pos+1:]
     return text
+
+def replace_social_response():
+    return random.choice([
+        "ajj no uso eso jeje, mejor sigamos aca 😘",
+        "ajj no tengo de eso jeje, hablemos aqui mejor 😉",
+        "no me gusta usar esas cosas, prefiero aca jeje 😏"
+    ])
 
 # --- MEMORIA ---
 def update_memories(user_session, user_message):
     lower_msg = user_message.lower()
     memories = user_session.get("memories", [])
 
+    if "soy de" in lower_msg or "vivo en" in lower_msg:
+        ciudad = user_message.split("de", 1)[1].strip() if "de" in lower_msg else user_message
+        memories.append(f"es de {ciudad}")
+
     if "me gusta" in lower_msg:
         detalle = user_message.split("me gusta", 1)[1].strip()
         memories.append(f"le gusta {detalle}")
-    if "soy de" in lower_msg:
-        detalle = user_message.split("soy de", 1)[1].strip()
-        memories.append(f"es de {detalle}")
-    if "trabajo en" in lower_msg:
-        detalle = user_message.split("trabajo en", 1)[1].strip()
-        memories.append(f"trabaja en {detalle}")
 
     user_session["memories"] = memories[-5:]
 
 def recall_memory(user_session):
     memories = user_session.get("memories", [])
-    if memories and random.random() < 0.4:
+    if memories and random.random() < 0.25:
         return random.choice(memories)
     return None
 
@@ -229,30 +211,17 @@ def save_user_history(user_id, session_data):
 # --- FIREWALL ---
 def contains_forbidden_word(text):
     text_lower = text.lower()
-
-    # Palabras prohibidas
     for word in BotConfig.FORBIDDEN_WORDS:
-        if re.search(r'\b' + re.escape(word) + r'\b', text_lower):
-            logging.warning(f"🚨 Palabra prohibida detectada: '{word}' en '{text}'")
+        if word in text_lower:
             return True
-
-    # 🚫 Redes sociales
     for social in BotConfig.FORBIDDEN_SOCIALS:
         if social in text_lower:
-            logging.warning(f"🚨 Red social detectada: '{social}' en '{text}'")
             return True
-
     return False
-
-def handle_system_message(message):
-    for trigger, response in BotConfig.PREDEFINED_RESPONSES.items():
-        if trigger in message:
-            return response
-    return None
 
 # --- IA ---
 def generate_ia_response(user_id, user_message, user_session):
-    global last_global_replies, last_questions, last_emojis
+    global last_global_replies
 
     instrucciones_sistema = BotConfig.PREAMBULO_BASE
     cohere_history = []
@@ -261,8 +230,29 @@ def generate_ia_response(user_id, user_message, user_session):
         cohere_history.append({"role": role, "message": msg.get("message", "")})
     last_bot_message = next((m["message"] for m in reversed(cohere_history) if m["role"] == "CHATBOT"), None)
 
-    ia_reply = ""
+    # --- Caso especial: si preguntan de dónde es ---
+    if "de donde eres" in user_message.lower() or "donde vives" in user_message.lower():
+        evasivas = [
+            "ajj eso no importa jeje, y tu de donde eres? 😘",
+            "jeje mejor dime tu de donde eres? 😉",
+            "ajj no digo eso jeje, dime tu primero 😏"
+        ]
+        ia_reply = random.choice(evasivas)
+        user_session["history"].append({"role": "USER", "message": user_message})
+        user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
+        return ia_reply
 
+    # --- Caso especial: si el usuario ya dijo su ciudad ---
+    for mem in user_session.get("memories", []):
+        if "es de" in mem and ("soy de" in user_message.lower() or "vivo en" in user_message.lower()):
+            ciudad = mem.split("es de")[1].strip()
+            ia_reply = f"ajj yo tambien soy de {ciudad} jeje 😉"
+            user_session["history"].append({"role": "USER", "message": user_message})
+            user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
+            return ia_reply
+
+    # --- Generación normal ---
+    ia_reply = ""
     try:
         current_cohere_client = key_manager.get_current_client()
         response = current_cohere_client.chat(
@@ -270,61 +260,38 @@ def generate_ia_response(user_id, user_message, user_session):
             preamble=instrucciones_sistema,
             message=user_message,
             chat_history=cohere_history,
-            temperature=0.85
+            temperature=0.7
         )
         ia_reply = response.text.strip()
-    except NotFoundError:
-        ia_reply = "ese modelo ya no está 😅"
     except Exception:
-        try:
-            current_cohere_client = key_manager.rotate_to_next_key()
-            response = current_cohere_client.chat(
-                model="command-a-03-2025",
-                preamble=instrucciones_sistema,
-                message=user_message,
-                chat_history=cohere_history,
-                temperature=0.85
-            )
-            ia_reply = response.text.strip()
-        except Exception:
-            ia_reply = "mmm fallo algo jeje 😅"
+        ia_reply = "ajj no entendi jeje 😅"
 
     ia_reply = re.sub(r"[!?]{2,}", lambda m: m.group(0)[0], ia_reply)
-    if not ia_reply or ia_reply == last_bot_message or contains_forbidden_word(ia_reply):
+    if not ia_reply or ia_reply == last_bot_message:
         ia_reply = random.choice(["jeje sii", "ok", "dale", "mmm bueno"])
 
-    chatbot_msgs = [m for m in user_session["history"] if m["role"] == "CHATBOT"]
-    if len(chatbot_msgs) > 0 and len(chatbot_msgs) % 3 == 0:
-        q = random.choice(NATURAL_QUESTIONS)
-        ia_reply += " " + humanize_text(q)
+    if contains_forbidden_word(ia_reply):
+        ia_reply = replace_social_response()
 
-    if random.random() < 0.4:
+    if len(user_session["history"]) % 3 == 0:
+        ia_reply += " " + humanize_text(random.choice(NATURAL_QUESTIONS))
+
+    if random.random() < 0.3:
         ia_reply = humanize_text(ia_reply)
 
-    modo = random.choice(MODOS)
-    if modo == "timido":
-        if random.random() < 0.4:
-            ia_reply += " " + humanize_text(random.choice(["y tu?", "mmm y tu q piensas?", "jeje y tu?"]))
-    elif modo == "atrevido":
-        if random.random() < 0.5:
-            ia_reply += " " + random.choice(["y si me cuentas mas 😉", "me gusta como hablas 😏", "quiero saber mas 🔥"])
-
-    update_memories(user_session, user_message)
     memory = recall_memory(user_session)
-    if memory:
-        ia_reply += f" (recuerdo q me dijiste q {memory})"
+    if memory and random.random() < 0.2:
+        ia_reply += f" (me contaste q {memory})"
 
     if ia_reply in last_global_replies:
-        ia_reply = random.choice(["ajaj sii", "dalee", "okey", "mmm bueno", "yaa jeje"])
+        ia_reply = random.choice(["ajaj sii", "dalee", "okey", "mmm bueno"])
     last_global_replies.add(ia_reply)
     if len(last_global_replies) > 20:
         last_global_replies.pop()
 
-    should_have_emoji = not user_session.get("emoji_last_message", False)
-    if should_have_emoji:
-        emoji_choice = random.choice(RANDOM_EMOJIS)
+    if not user_session.get("emoji_last_message", False):
         if not contains_emoji(ia_reply):
-            ia_reply += emoji_choice
+            ia_reply += random.choice(RANDOM_EMOJIS)
         user_session["emoji_last_message"] = True
     else:
         ia_reply = strip_emojis(ia_reply)
@@ -332,6 +299,7 @@ def generate_ia_response(user_id, user_message, user_session):
 
     user_session["history"].append({"role": "USER", "message": user_message})
     user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
+    update_memories(user_session, user_message)
     return ia_reply
 
 # --- FLASK API ---
@@ -342,16 +310,16 @@ def handle_chat():
     try:
         raw_data = request.get_data(as_text=True)
         if not raw_data:
-            return "Error: No se recibieron datos.", 400
+            return "jeje no entendi 😅", 200
         cleaned_data_str = "".join(ch for ch in raw_data if unicodedata.category(ch)[0] != "C")
         try:
             data = json.loads(cleaned_data_str)
         except json.JSONDecodeError:
-            return "Error: Formato JSON inválido.", 400
+            return "mmm repiteme eso jeje", 200
         user_id = data.get("user_id")
         user_message = data.get("message")
         if not user_id or not user_message:
-            return "Error: faltan parámetros", 400
+            return "ajj no entendi jeje", 200
         if user_id.strip().lower() in BotConfig.IGNORED_USERS:
             return "Ignorado", 200
         with locks_dict_lock:
@@ -360,11 +328,10 @@ def handle_chat():
             user_lock = user_locks[user_id]
         with user_lock:
             user_session = get_user_history(user_id)
-            system_response = handle_system_message(user_message)
+            system_response = BotConfig.PREDEFINED_RESPONSES.get(user_message)
             if system_response:
                 user_session["history"].append({"role": "USER", "message": user_message})
                 user_session["history"].append({"role": "CHATBOT", "message": system_response})
-                user_session["emoji_last_message"] = contains_emoji(system_response)
                 save_user_history(user_id, user_session)
                 return system_response
             ia_reply = generate_ia_response(user_id, user_message, user_session)
@@ -372,7 +339,7 @@ def handle_chat():
             return ia_reply
     except Exception as e:
         logging.error(f"Error en /chat: {e}", exc_info=True)
-        return "Error en el servidor", 500
+        return "mmm fallo algo jeje 😅", 200
 
 # --- INICIO ---
 if __name__ == "__main__":
