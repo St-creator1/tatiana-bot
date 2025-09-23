@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # --- CONFIG GEMINI ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")  # 👈 flash por defecto
 if not GEMINI_API_KEY:
     raise ValueError("No se encontró GEMINI_API_KEY en variables de entorno.")
 genai.configure(api_key=GEMINI_API_KEY)
@@ -135,7 +136,7 @@ def replace_social_response():
 # --- GEMINI ---
 def query_gemini(prompt):
     try:
-        model = genai.GenerativeModel("gemini-pro")
+        model = genai.GenerativeModel(GEMINI_MODEL)
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
