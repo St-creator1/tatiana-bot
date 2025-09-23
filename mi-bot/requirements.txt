@@ -1,5 +1,6 @@
-flask
-cohere
+Flask
+requests
 python-dotenv
 waitress
 psycopg2-binary
+google-generativeai
