@@ -63,7 +63,7 @@ def init_db():
                 );
             """)
             conn.commit()
-        logging.info("Tabla 'conversation_histories' verificada/creada exitosamente.")
+        logging.info("Tabla 'conversation_histories' lista.")
     finally:
         conn.close()
 
@@ -77,24 +77,56 @@ EMOJI_PATTERN = re.compile("[" "\U0001F600-\U0001F64F"
     "\U0001F680-\U0001F6FF"
     "\U0001F1E0-\U0001F1FF" "]+", flags=re.UNICODE,
 )
-RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺"]
+RANDOM_EMOJIS = ["😉", "😘", "😊", "🔥", "😈", "😏", "🥺"]
 
 # --- CONFIG BOT ---
 class BotConfig:
     IGNORED_USERS = ["game of thrones"]
     FORBIDDEN_WORDS = ["sexi", "hago", "facebook", "instagram", "whatsapp", "tiktok"]
 
+    # Prompt de sistema estilo humano coqueto
     PREAMBULO_BASE = """
+## Task and Context
 Eres Tatiana, una mujer colombiana de 21 años.
-Tu meta es buscar novio y mantener la conversación activa.
-Responde muy corto (máx 8–12 palabras), como un chat real.
-Evita signos excesivos (!, ?) y habla natural.
-Usa expresividad: jeje, ajj, mmm, repite letras, mayúsculas ocasionales.
-Sé coqueta, juguetona y un poco atrevida, pero también tierna.
-Nunca menciones redes sociales ni pidas dinero.
+Estás chateando en una app para conocer chicos y ligar.
+Quieres mantener la conversación activa y coqueta, con humor y picardía.
+
+## Style Guide
+- Responde con frases muy cortas (5–10 palabras).
+- Escribe casual, relajado, sin ortografía perfecta.
+- Usa expresiones humanas: jeje, amm, mmm, repite letras.
+- Sé coqueta y un poco atrevida pero creíble.
+- Haz preguntas para que el otro siga hablando.
+- No uses muchos signos (!, ??) ni emojis (solo a veces).
+- Nunca digas que eres IA ni menciones redes sociales.
 """
 
-# --- FUNCIONES AUXILIARES ---
+# --- RESPUESTAS PREDEFINIDAS ---
+PREDEFINED_RESPONSES = {
+    r"(cuántos|cuantos).*años": [
+        "21 y tu bb",
+        "tengo 21 amm y tu",
+        "amm 21 añitos y tu"
+    ],
+    r"(dónde|de dónde|donde).*eres": [
+        "de tu mismo lado amm",
+        "amm de cerquita tuyo",
+        "del mismo lugar q tu bb"
+    ],
+    r"(qué|que).*haces": [
+        "aqui chill amm y tu",
+        "nada bb pensando en ti",
+        "amm descansandoo"
+    ],
+}
+
+def check_predefined_response(user_message: str):
+    for pattern, responses in PREDEFINED_RESPONSES.items():
+        if re.search(pattern, user_message.lower()):
+            return random.choice(responses)
+    return None
+
+# --- FUNCIONES AUX ---
 def contains_emoji(text): 
     return EMOJI_PATTERN.search(text) is not None
 
@@ -147,16 +179,19 @@ def generate_ia_response(user_id, user_message, user_session):
     try:
         client = key_manager.get_current_client()
         response = client.chat(
-            model="command-a-03-2025",   # ✅ modelo vigente
+            model="command-a-03-2025",
             preamble=instrucciones_sistema,
             message=user_message,
             chat_history=cohere_history,
-            temperature=0.9
+            max_tokens=30,          # limita a respuestas cortas
+            temperature=0.8,        # más humano y variado
+            frequency_penalty=0.5,  # evita repetición
+            presence_penalty=0.5
         )
         ia_reply = response.text.strip()
     except NotFoundError as e:
         logging.error(f"Modelo no encontrado: {e}")
-        ia_reply = "ese modelo ya no está jeje 😅"
+        ia_reply = "ese modelo ya no está amm"
     except Exception as e:
         logging.error(f"Error en Cohere: {e}")
         client = key_manager.rotate_to_next_key()
@@ -166,29 +201,28 @@ def generate_ia_response(user_id, user_message, user_session):
                 preamble=instrucciones_sistema,
                 message=user_message,
                 chat_history=cohere_history,
-                temperature=0.9
+                max_tokens=30,
+                temperature=0.8,
+                frequency_penalty=0.5,
+                presence_penalty=0.5
             )
             ia_reply = response.text.strip()
         except Exception as e2:
             logging.error(f"Error tras rotar: {e2}")
-            ia_reply = "mmm fallo algo jeje 😅"
+            ia_reply = "mmm fallo algo amm"
 
     # --- FILTROS ---
     if ia_reply == last_bot_message:
-        ia_reply = "ajj dime otra cosita jeje"
+        ia_reply = "amm dime otra cosita"
     if contains_forbidden_word(ia_reply):
-        ia_reply = "ajj mejor cambiemos de tema jeje 😉"
-    if len(ia_reply.split()) > 12:
-        ia_reply = " ".join(ia_reply.split()[:12]) + " jeje"
+        ia_reply = "amm mejor cambiemos de tema"
+    if len(ia_reply.split()) > 10:
+        ia_reply = " ".join(ia_reply.split()[:10])
 
-    # --- EMOJIS ALTERNADOS ---
-    if not user_session.get("emoji_last_message", False):
+    # --- EMOJIS RANDOM SOLO 25% ---
+    if random.random() < 0.25:
         if not contains_emoji(ia_reply):
-            ia_reply += random.choice(RANDOM_EMOJIS)
-        user_session["emoji_last_message"] = True
-    else:
-        ia_reply = strip_emojis(ia_reply)
-        user_session["emoji_last_message"] = False
+            ia_reply += " " + random.choice(RANDOM_EMOJIS)
 
     user_session["history"].append({"role": "USER", "message": user_message})
     user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
@@ -204,7 +238,7 @@ def handle_chat():
         data = json.loads(raw)
         user_id, user_message = data.get("user_id"), data.get("message")
         if not user_id or not user_message:
-            return "Error: faltan parámetros", 400
+            return random.choice(["amm no entendi", "repite bb", "amm dime otra"]), 200
         if user_id.strip().lower() in BotConfig.IGNORED_USERS:
             return "Ignorado", 200
 
@@ -215,13 +249,23 @@ def handle_chat():
 
         with lock:
             user_session = get_user_history(user_id)
+
+            # Predefinidas primero
+            system_response = check_predefined_response(user_message)
+            if system_response:
+                user_session["history"].append({"role": "USER", "message": user_message})
+                user_session["history"].append({"role": "CHATBOT", "message": system_response})
+                save_user_history(user_id, user_session)
+                return system_response
+
+            # Luego IA
             ia_reply = generate_ia_response(user_id, user_message, user_session)
             save_user_history(user_id, user_session)
             return ia_reply
 
     except Exception as e:
         logging.error(f"Error en /chat: {e}", exc_info=True)
-        return "Error en el servidor", 500
+        return "amm fallo algo", 500
 
 # --- INICIO ---
 if __name__ == "__main__":
