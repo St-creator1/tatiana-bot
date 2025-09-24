@@ -5,3 +5,4 @@ waitress
 psycopg2-binary
 cohere
 
+
