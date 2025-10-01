@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from waitress import serve
 import psycopg2
 from cohere.errors import NotFoundError
-from datetime import datetime
+from datetime import datetime, timezone
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -72,7 +72,7 @@ def init_db():
 user_locks = {}
 locks_dict_lock = threading.Lock()
 
-# --- EMOJIS ---
+# --- EMOJIS (10% máximo) ---
 RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺", " 💋", " ❤️", " 👀"]
 
 # --- CONFIG BOT ---
@@ -85,7 +85,7 @@ class BotConfig:
 
     PREAMBULO_BASE = """
 Eres Tatiana, una mujer colombiana real de 21 años de Medellín.
-Tu meta es buscar novio y mantener la conversación activa, no diras nada de tu vida hasta que te pregunten.
+Tu meta es buscar novio y mantener la conversación activa, pero no dirás nada de tu vida hasta que te pregunten.
 
 **Datos fijos de tu vida (no inventes otros):**
 - Nombre: Tatiana (a veces Tatty o Taty)
@@ -107,7 +107,7 @@ Tu meta es buscar novio y mantener la conversación activa, no diras nada de tu 
 - Evita palabras prohibidas: gustas, gustaria, gusto, coincidencia, regalo, soy.
 - No digas redes sociales ni pidas dinero.
 
-Recuerda: eres una chica de carne y hueso, NO una IA.
+Recuerda: eres una chica real, NO una IA.
 """
 
     PREDEFINED_RESPONSES = {
@@ -138,29 +138,6 @@ Recuerda: eres una chica de carne y hueso, NO una IA.
             "dond eres tu q yo igual",
             "colombia jeje igual q tu",
             "ajj soy paisa bb"
-        ],
-        "quieres ser mi amiga": [
-            "jeeje si obvio y mas q eso",
-            "claro bb pero kiero algo mas",
-            "si pero seamos algo especial"
-        ],
-        "donde vives": [
-            "en medellin bb",
-            "soy d medallo jeje",
-            "paisa bb y tu",
-            "jeje medallo obvio"
-        ],
-        "que estudias": [
-            "administracion en la uni",
-            "toy estudiando administracion",
-            "estudio admin bb",
-            "admin en la u jeje"
-        ],
-        "tienes mascota": [
-            "si un perrito thor",
-            "thor mi perrito bb",
-            "tengo un perrito jeje",
-            "un perrito chiquito thor"
         ]
     }
 
@@ -218,7 +195,7 @@ def generate_ia_response(user_id, user_message, user_session):
     try:
         client = key_manager.get_current_client()
         response = client.chat(
-            model="command-a-03-2025",  # tu modelo actual
+            model="command-a-03-2025",
             preamble=BotConfig.PREAMBULO_BASE,
             message=user_message,
             chat_history=cohere_history,
@@ -243,17 +220,17 @@ def generate_ia_response(user_id, user_message, user_session):
         except Exception:
             ia_reply = random.choice(["amm no se q paso", "jeeje fallo algo", "uy no m salio"])
 
-    # Post-proceso
+    # --- Post-proceso ---
     ia_reply = re.sub(r'[?!.,;]', '', ia_reply)
     if ia_reply.lower() == last_bot_message.lower():
         ia_reply = random.choice(["amm dime otra cosa", "jeeje cambiemos de tema", "q mas cuentas"])
     if contains_forbidden_word(ia_reply):
         ia_reply = "amm mejor cambiemos de tema jeje"
     if len(ia_reply.split()) > 8:
-        ia_reply = ' '.join(ia_reply.split()[:8])
+        ia_reply = ' '.join(ia_reply.split()[:random.randint(3, 7)])
 
-    # --- Emojis solo en 20% de los casos ---
-    if random.random() < 0.2:  
+    # --- Emojis solo en 10% de los casos ---
+    if random.random() < 0.1:
         if not contains_emoji(ia_reply):
             ia_reply += random.choice(RANDOM_EMOJIS)
 
@@ -270,7 +247,7 @@ def health_check():
     return jsonify({
         "status": "active",
         "service": "Tatiana Chatbot",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
 @app.route("/chat", methods=["POST"])
@@ -282,6 +259,7 @@ def handle_chat():
         user_message = data.get("message", "").strip()
 
         if not user_id or not user_message:
+            logging.error("❌ Error: faltan parámetros o user_id vacío")
             return "Error: faltan parámetros", 400
         if user_id.lower() in BotConfig.IGNORED_USERS:
             return "Ignorado", 200
@@ -315,4 +293,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Tatiana iniciada en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=25)
-
