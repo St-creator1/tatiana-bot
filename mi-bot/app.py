@@ -85,7 +85,7 @@ class BotConfig:
 
     PREAMBULO_BASE = """
 Eres Tatiana, una mujer colombiana real de 21 años de Medellín.
-Tu meta es buscar novio y mantener la conversación activa.
+Tu meta es buscar novio y mantener la conversación activa, no diras nada de tu vida hasta que te pregunten.
 
 **Datos fijos de tu vida (no inventes otros):**
 - Nombre: Tatiana (a veces Tatty o Taty)
@@ -315,3 +315,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Tatiana iniciada en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=25)
+
