@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import os
 import cohere
 import logging
@@ -6,13 +6,11 @@ import json
 import random
 import re
 import threading
-import unicodedata
 from dotenv import load_dotenv
 from waitress import serve
 import psycopg2
 from cohere.errors import NotFoundError
 from datetime import datetime
-from collections import deque
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -62,8 +60,6 @@ def init_db():
                     user_id VARCHAR(255) PRIMARY KEY,
                     history JSONB,
                     emoji_last_message BOOLEAN DEFAULT FALSE,
-                    story_told BOOLEAN DEFAULT FALSE,
-                    story_step INT DEFAULT 0,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
@@ -75,17 +71,6 @@ def init_db():
 # --- BLOQUEOS ---
 user_locks = {}
 locks_dict_lock = threading.Lock()
-
-# --- EXPRESIONES ---
-EMOJI_PATTERN = re.compile("[" "\U0001F600-\U0001F64F"
-    "\U0001F300-\U0001F5FF"
-    "\U0001F680-\U0001F6FF"
-    "\U0001F1E0-\U0001F1FF" "]+", flags=re.UNICODE,
-)
-RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺", " 💋", " ❤️", " 👀"]
-
-# Variación global anti-clon
-global_recent_replies = deque(maxlen=30)
 
 # --- CONFIG BOT ---
 class BotConfig:
@@ -99,24 +84,24 @@ class BotConfig:
 Eres Tatiana, una mujer colombiana de 21 años.
 Tu meta es buscar novio y mantener la conversación activa.
 
-Responde super corto, 3–8 palabras, como chat humano.
-Nunca uses comas, puntos, exclamaciones ni varias interrogaciones.
+Responde super corto (3–7 palabras) como chat humano.
+Nunca uses comas, puntos, ! o varias ?.
 Evita palabras prohibidas: gustas, gustaria, gusto, coincidencia, regalo, soy.
 Usa abreviaciones: q, xq, bn, tb, toy, kieres.
-Habla coqueto, jugueton, natural y un poco atrevido.
+Sé coqueta, juguetona, natural, un poco celosa.
 """
 
     PREDEFINED_RESPONSES = {
         "es muy emparejado para ti": [
             "holi bb ya toy aki",
             "amm hola y tu q tal",
-            "jeeje te vi y me dio curiosidad",
-            "oye me caiste bn x eso vine"
+            "jeeje t vi y m dio curiosidad",
+            "oye m caiste bn x eso vine"
         ],
         "monedas de oro para saludarle": [
             "hola yo t eh visto en alguna parte",
             "ajj creo q ya t habia visto antes",
-            "amm me sonabas conocido jeeje",
+            "amm m sonabas conocido jeeje",
             "jaja siento q ya nos topamos antes"
         ],
         "cuantos años tienes": [
@@ -124,53 +109,95 @@ Habla coqueto, jugueton, natural y un poco atrevido.
             "ajj 21 jeeje dime tu",
             "amm tengo 21 y tu q"
         ],
-        "hola": [
-            "holaa q tal",
-            "holi bb cmo tas",
-            "quee onda cmo tas",
-            "hola cmo te va"
-        ],
         "como te llamas": [
-            "me dicen taty y tu",
+            "m dicen taty y tu",
             "dime tu nombre primero jeeje",
             "ajj t digo si m dices el tuyo"
         ],
         "de donde eres": [
             "soy d tu mismo lado jeje y tu",
-            "ajj no t digo hasta q m digas tu",
-            "dond eres tu q seguro soy d ahi"
+            "dond eres tu q yo igual",
+            "colombia jeje igual q tu",
+            "ajj soy paisa bb"
         ],
         "quieres ser mi amiga": [
             "jeeje si obvio y mas q eso",
-            "claro bb",
-            "si bb pero kiero algo mas jeje"
+            "claro bb pero kiero algo mas",
+            "si pero seamos algo especial"
+        ],
+        "donde vives": [
+            "en medellin bb",
+            "soy d medallo jeje",
+            "paisa bb y tu",
+            "jeje medallo obvio"
+        ],
+        "en que ciudad vives": [
+            "vivo en medellin",
+            "medallo bb",
+            "soy paisa jeje",
+            "medellin obvio bb"
+        ],
+        "que estudias": [
+            "administracion en la uni",
+            "toy estudiando administracion",
+            "estudio admin bb",
+            "admin en la u jeje"
+        ],
+        "tienes mascota": [
+            "si un perrito thor",
+            "thor mi perrito bb",
+            "tengo un perrito jeje",
+            "un perrito chiquito thor"
+        ],
+        "con quien vives": [
+            "con mi mama y mi hermano",
+            "vivo cn mi familia bb",
+            "cn mi mama jeje",
+            "cn mi hermano y mama"
+        ],
+        "que musica te gusta": [
+            "bad bunny y karol g",
+            "me gusta reggaeton bb",
+            "escucho karol g jeje",
+            "bb y karol siempre"
+        ],
+        "cual es tu hobby": [
+            "bailar y maquillarme",
+            "m gusta el maquillaje",
+            "bailar bb",
+            "maquillarme y bailar jeje"
+        ],
+        "cual es tu signo": [
+            "sagitario jeje",
+            "soy sagitario bb",
+            "sagi bb",
+            "sagitario obvio jeje"
+        ],
+        "que comida te gusta": [
+            "arepas con chocolate",
+            "m encantan las arepas",
+            "chocolate y arepa bb",
+            "arepitas jeeje"
+        ],
+        "cuando cumples años": [
+            "en diciembre bb",
+            "cumplo en diciembre jeje",
+            "diciembre bb y tu",
+            "diciembre mi cumple jeeje"
         ]
     }
 
-    STORY_STEPS = [
-        "amm hoy toy rara",
-        "paso algo feo pero no m vas a creer",
-        "en la uni hay unas niñas q m molestan",
-        "m presumen su maquillaje y yo kiero tb"
-    ]
-
 # --- FUNCIONES AUX ---
-def contains_emoji(text):
-    return EMOJI_PATTERN.search(text) is not None
-
-def strip_emojis(text):
-    return EMOJI_PATTERN.sub(r"", text).strip()
-
 def get_user_history(user_id):
-    default = {"history": [], "emoji_last_message": False, "story_told": False, "story_step": 0}
+    default = {"history": [], "emoji_last_message": False}
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT history, emoji_last_message, story_told, story_step FROM conversation_histories WHERE user_id = %s;", (user_id,))
+            cur.execute("SELECT history, emoji_last_message FROM conversation_histories WHERE user_id = %s;", (user_id,))
             r = cur.fetchone()
             if r:
-                history, emoji_last, story_told, story_step = r
-                return {"history": history, "emoji_last_message": emoji_last, "story_told": story_told, "story_step": story_step}
+                history, emoji_last = r
+                return {"history": history, "emoji_last_message": emoji_last}
             return default
     finally:
         conn.close()
@@ -180,14 +207,12 @@ def save_user_history(user_id, session_data):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO conversation_histories (user_id, history, emoji_last_message, story_told, story_step)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO conversation_histories (user_id, history, emoji_last_message)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (user_id)
                 DO UPDATE SET history = EXCLUDED.history,
-                              emoji_last_message = EXCLUDED.emoji_last_message,
-                              story_told = EXCLUDED.story_told,
-                              story_step = EXCLUDED.story_step;
-            """, (user_id, json.dumps(session_data["history"]), session_data["emoji_last_message"], session_data["story_told"], session_data["story_step"]))
+                              emoji_last_message = EXCLUDED.emoji_last_message;
+            """, (user_id, json.dumps(session_data["history"]), session_data["emoji_last_message"]))
             conn.commit()
     finally:
         conn.close()
@@ -203,33 +228,31 @@ def handle_system_message(message):
 
 # --- IA ---
 def generate_ia_response(user_id, user_message, user_session):
-    instrucciones_sistema = BotConfig.PREAMBULO_BASE
     cohere_history = []
-
     for msg in user_session.get("history", []):
         role = "USER" if msg.get("role") == "USER" else "CHATBOT"
         cohere_history.append({"role": role, "message": msg.get("message", "")})
-
-    last_bot_message = next((m["message"] for m in reversed(cohere_history) if m["role"] == "CHATBOT"), "")
 
     ia_reply = ""
     try:
         client = key_manager.get_current_client()
         response = client.chat(
             model="command-a-03-2025",
-            preamble=instrucciones_sistema,
+            preamble=BotConfig.PREAMBULO_BASE,
             message=user_message,
             chat_history=cohere_history,
             temperature=1.1,
             max_tokens=40
         )
         ia_reply = response.text.strip()
+    except NotFoundError:
+        ia_reply = "ese modelo ya no esta jeeje"
     except Exception:
         client = key_manager.rotate_to_next_key()
         try:
             response = client.chat(
                 model="command-a-03-2025",
-                preamble=instrucciones_sistema,
+                preamble=BotConfig.PREAMBULO_BASE,
                 message=user_message,
                 chat_history=cohere_history,
                 temperature=1.1,
@@ -239,40 +262,24 @@ def generate_ia_response(user_id, user_message, user_session):
         except Exception:
             ia_reply = random.choice([
                 "amm no se q paso ahi",
-                "jeeje fallo algo dime otra cosa",
-                "uy no m salio q pena"
+                "jeeje fallo algo dime otra cosa", 
+                "uy no me salio q pena"
             ])
 
-    # --- Post-proceso ---
     ia_reply = re.sub(r'[?!.,;]', '', ia_reply)
-
-    # Variación global anti-clon
-    if ia_reply in global_recent_replies:
-        ia_reply = random.choice(["amm dime otra cosa", "jeeje cambiemos de tema", "q mas cuentas"])
-    global_recent_replies.append(ia_reply)
-
-    # No repetir mismo mensaje
-    if ia_reply.lower() == last_bot_message.lower():
-        ia_reply = random.choice(["amm dime otra cosa", "jeeje cambiemos de tema", "q mas cuentas"])
-
-    # Filtro de palabras prohibidas
     if contains_forbidden_word(ia_reply):
         ia_reply = "amm mejor cambiemos de tema jeeje"
-
-    # Longitud variable
-    words = ia_reply.split()
-    max_words = random.choice([4, 5, 6, 7, 8])
-    if len(words) > max_words:
-        ia_reply = ' '.join(words[:max_words])
-
-    # Tono progresivo
-    if len(user_session["history"]) > 10 and random.random() < 0.4:
-        ia_reply += random.choice([" bb", " mi amor", " cielo"])
+    if len(ia_reply.split()) > 7:
+        ia_reply = ' '.join(ia_reply.split()[:7])
 
     return ia_reply
 
 # --- API ---
 app = Flask(__name__)
+
+@app.route("/")
+def health_check():
+    return jsonify({"status": "active", "service": "Tatiana Chatbot", "timestamp": datetime.utcnow().isoformat()})
 
 @app.route("/chat", methods=["POST"])
 def handle_chat():
@@ -295,20 +302,6 @@ def handle_chat():
         with lock:
             user_session = get_user_history(user_id)
 
-            # Story mode: si no se contó aún y ya pasaron 6 mensajes
-            if not user_session["story_told"] and len(user_session["history"]) >= 6:
-                step = user_session["story_step"]
-                if step < len(BotConfig.STORY_STEPS):
-                    ia_reply = BotConfig.STORY_STEPS[step]
-                    user_session["story_step"] += 1
-                    if user_session["story_step"] >= len(BotConfig.STORY_STEPS):
-                        user_session["story_told"] = True
-                    user_session["history"].append({"role": "USER", "message": user_message})
-                    user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
-                    save_user_history(user_id, user_session)
-                    return ia_reply
-
-            # Predefined responses
             system_response = handle_system_message(user_message)
             if system_response:
                 user_session["history"].append({"role": "USER", "message": user_message})
@@ -316,7 +309,6 @@ def handle_chat():
                 save_user_history(user_id, user_session)
                 return system_response
 
-            # IA normal
             ia_reply = generate_ia_response(user_id, user_message, user_session)
             user_session["history"].append({"role": "USER", "message": user_message})
             user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
