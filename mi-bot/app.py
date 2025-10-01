@@ -169,7 +169,7 @@ def contains_emoji(text):
     return any(ch in text for ch in RANDOM_EMOJIS)
 
 def strip_emojis(text):
-    return re.sub(r'[^\w\s,.!?]', '', text)
+    return re.sub(r'[^\w\s]', '', text)
 
 def get_user_history(user_id):
     default = {"history": [], "emoji_last_message": False}
@@ -218,7 +218,7 @@ def generate_ia_response(user_id, user_message, user_session):
     try:
         client = key_manager.get_current_client()
         response = client.chat(
-            model="command-a-03-2025",
+            model="command-a-03-2025",  # tu modelo actual
             preamble=BotConfig.PREAMBULO_BASE,
             message=user_message,
             chat_history=cohere_history,
@@ -251,6 +251,11 @@ def generate_ia_response(user_id, user_message, user_session):
         ia_reply = "amm mejor cambiemos de tema jeje"
     if len(ia_reply.split()) > 8:
         ia_reply = ' '.join(ia_reply.split()[:8])
+
+    # --- Emojis solo en 20% de los casos ---
+    if random.random() < 0.2:  
+        if not contains_emoji(ia_reply):
+            ia_reply += random.choice(RANDOM_EMOJIS)
 
     user_session["history"].append({"role": "USER", "message": user_message})
     user_session["history"].append({"role": "CHATBOT", "message": ia_reply})
