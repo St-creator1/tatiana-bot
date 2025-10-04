@@ -12,7 +12,8 @@ from waitress import serve
 import psycopg2
 from cohere.errors import NotFoundError
 from datetime import datetime
-import requests # <-- LÍNEA NUEVA AÑADIDA
+import requests
+import ast # <-- LÍNEA NUEVA AÑADIDA
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -253,7 +254,25 @@ def health_check():
 def handle_chat():
     try:
         raw = request.get_data(as_text=True)
-        data = json.loads(raw)
+        
+        # --- INICIO: NUEVO PARSEO ROBUSTO DE JSON ---
+        data = None
+        try:
+            # Primero, intentar con el parser estricto de JSON
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logging.warning("Fallo el parseo de JSON, intentando un método más flexible (literal_eval)...")
+            try:
+                # Si falla, intentar evaluar la cadena como un literal de Python (acepta comillas simples)
+                data = ast.literal_eval(raw)
+                if not isinstance(data, dict):
+                    # Asegurarse de que el resultado es un diccionario
+                    raise ValueError("El resultado evaluado no es un diccionario.")
+            except (ValueError, SyntaxError) as e:
+                logging.error(f"Error final de parseo. Datos crudos: '{raw}'. Error: {e}")
+                return "Error: Formato de datos inválido.", 400
+        # --- FIN: NUEVO PARSEO ROBUSTO DE JSON ---
+
         user_id = data.get("user_id", "").strip()
         user_message = data.get("message", "").strip()
         client_id = data.get("client_id") # <-- Obtenemos la ID del cliente
@@ -308,3 +327,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Servidor iniciado en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=20)
+
