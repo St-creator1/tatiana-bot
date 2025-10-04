@@ -13,7 +13,8 @@ import psycopg2
 from cohere.errors import NotFoundError
 from datetime import datetime
 import requests
-import ast # <-- LÍNEA NUEVA AÑADIDA
+import ast
+import time
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -71,6 +72,42 @@ def init_db():
     finally:
         conn.close()
 
+# --- INICIO: NUEVO SISTEMA DE CLIENTES ACTIVOS (LOCAL) ---
+ACTIVE_CLIENTS_FILE = "users.txt"
+ACTIVE_CLIENTS_LIST = set()
+active_clients_lock = threading.Lock()
+
+def fetch_active_clients():
+    """Obtiene la lista de clientes activos desde el archivo local users.txt."""
+    try:
+        with open(ACTIVE_CLIENTS_FILE, 'r', encoding='utf-8') as f:
+            # Lee todas las líneas, las limpia, y filtra las que están comentadas
+            clients_from_file = {
+                line.strip() 
+                for line in f 
+                if line.strip() and not line.strip().startswith('//') and not line.strip().startswith('#')
+            }
+        
+        with active_clients_lock:
+            global ACTIVE_CLIENTS_LIST
+            if ACTIVE_CLIENTS_LIST != clients_from_file:
+                ACTIVE_CLIENTS_LIST = clients_from_file
+                logging.info(f"Lista de clientes activos actualizada desde '{ACTIVE_CLIENTS_FILE}'. Total: {len(ACTIVE_CLIENTS_LIST)} clientes.")
+    except FileNotFoundError:
+        logging.warning(f"El archivo '{ACTIVE_CLIENTS_FILE}' no fue encontrado. Ningún cliente estará activo.")
+        with active_clients_lock:
+            ACTIVE_CLIENTS_LIST = set()
+    except Exception as e:
+        logging.error(f"No se pudo leer el archivo de clientes activos: {e}")
+
+def update_active_clients_periodically():
+    """Función que se ejecuta en un hilo para actualizar la lista periódicamente."""
+    while True:
+        fetch_active_clients()
+        time.sleep(300) # Actualiza cada 5 minutos
+# --- FIN: NUEVO SISTEMA DE CLIENTES ACTIVOS (LOCAL) ---
+
+
 # --- BLOQUEOS ---
 user_locks = {}
 locks_dict_lock = threading.Lock()
@@ -85,7 +122,6 @@ RANDOM_EMOJIS = [" 😉", " 😘", " 😊", " 🔥", " 😈", " 😏", " 🥺", 
 
 # --- CONFIG BOT ---
 class BotConfig:
-    IGNORED_USERS = ["game of thrones"]
     FORBIDDEN_WORDS = [
         "sexi", "hago", "facebook", "instagram", "whatsapp", "tiktok",
         "gustas", "gustaria", "gusto", "coincidencia", "regalo", "soy"
@@ -235,13 +271,6 @@ def generate_ia_response(user_id, user_message, user_session):
 # --- API ---
 app = Flask(__name__)
 
-# --- INICIO: NUEVA CONFIGURACIÓN DE LICENCIA ---
-LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL")
-if not LICENSE_SERVER_URL:
-    raise ValueError("No se encontró la LICENSE_SERVER_URL en las variables de entorno.")
-# --- FIN: NUEVA CONFIGURACIÓN DE LICENCIA ---
-
-
 @app.route("/")
 def health_check():
     return json.dumps({
@@ -255,47 +284,42 @@ def handle_chat():
     try:
         raw = request.get_data(as_text=True)
         
-        # --- INICIO: NUEVO PARSEO ROBUSTO DE JSON ---
         data = None
         try:
-            # Primero, intentar con el parser estricto de JSON
             data = json.loads(raw)
         except json.JSONDecodeError:
             logging.warning("Fallo el parseo de JSON, intentando un método más flexible (literal_eval)...")
             try:
-                # Si falla, intentar evaluar la cadena como un literal de Python (acepta comillas simples)
                 data = ast.literal_eval(raw)
                 if not isinstance(data, dict):
-                    # Asegurarse de que el resultado es un diccionario
                     raise ValueError("El resultado evaluado no es un diccionario.")
             except (ValueError, SyntaxError) as e:
                 logging.error(f"Error final de parseo. Datos crudos: '{raw}'. Error: {e}")
                 return "Error: Formato de datos inválido.", 400
-        # --- FIN: NUEVO PARSEO ROBUSTO DE JSON ---
 
         user_id = data.get("user_id", "").strip()
         user_message = data.get("message", "").strip()
-        client_id = data.get("client_id") # <-- Obtenemos la ID del cliente
+        client_id = data.get("client_id")
 
-        # --- INICIO: NUEVA VERIFICACIÓN DE LICENCIA ---
+        # --- INICIO: NUEVA VERIFICACIÓN DE LICENCIA (LOCAL) ---
         if not client_id:
             return "Error: Petición inválida (falta client_id) tele", 401
 
-        try:
-            verify_url = f"{LICENSE_SERVER_URL}/verify?client_id={client_id}"
-            response = requests.get(verify_url, timeout=5)
-            if response.status_code != 200:
-                logging.warning(f"Cliente '{client_id}' con licencia inactiva o no encontrada.")
+        with active_clients_lock:
+            if client_id not in ACTIVE_CLIENTS_LIST:
+                logging.warning(f"Cliente '{client_id}' inactivo o no encontrado en users.txt.")
                 return "Suscripción inactiva. No pago a tiempo tele.", 403
-        except requests.RequestException as e:
-            logging.error(f"Error al contactar el servidor de licencias: {e}")
-            return "Error de servicio (no se pudo verificar licencia)", 503
-        # --- FIN: NUEVA VERIFICACIÓN DE LICENCIA ---
+        # --- FIN: NUEVA VERIFICACIÓN DE LICENCIA (LOCAL) ---
         
         if not user_id or not user_message:
             return "Error: faltan parámetros", 400
-        if user_id.lower() in BotConfig.IGNORED_USERS:
-            return "Ignorado", 200
+        
+        # Esta es la verificación para la lista de usuarios ignorados, que no hemos implementado en esta versión.
+        # Puedes descomentarla si en el futuro decides tener también una lista de usuarios a ignorar.
+        # with ignored_users_lock:
+        #     if user_id.lower() in IGNORED_USERS_LIST:
+        #         logging.info(f"Mensaje de '{user_id}' ignorado (lista dinámica).")
+        #         return "Ignorado", 200
 
         with locks_dict_lock:
             if user_id not in user_locks:
@@ -324,6 +348,12 @@ def handle_chat():
 # --- INICIO ---
 if __name__ == "__main__":
     init_db()
+    
+    # --- ARRANCA EL ACTUALIZADOR DE CLIENTES ACTIVOS ---
+    fetch_active_clients() 
+    update_thread = threading.Thread(target=update_active_clients_periodically, daemon=True)
+    update_thread.start()
+
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Servidor iniciado en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=20)
