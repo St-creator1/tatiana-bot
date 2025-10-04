@@ -12,6 +12,7 @@ from waitress import serve
 import psycopg2
 from cohere.errors import NotFoundError
 from datetime import datetime
+import requests # <-- LÍNEA NUEVA AÑADIDA
 
 # --- CONFIGURACIÓN ---
 load_dotenv()
@@ -233,6 +234,13 @@ def generate_ia_response(user_id, user_message, user_session):
 # --- API ---
 app = Flask(__name__)
 
+# --- INICIO: NUEVA CONFIGURACIÓN DE LICENCIA ---
+LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL")
+if not LICENSE_SERVER_URL:
+    raise ValueError("No se encontró la LICENSE_SERVER_URL en las variables de entorno.")
+# --- FIN: NUEVA CONFIGURACIÓN DE LICENCIA ---
+
+
 @app.route("/")
 def health_check():
     return json.dumps({
@@ -248,6 +256,22 @@ def handle_chat():
         data = json.loads(raw)
         user_id = data.get("user_id", "").strip()
         user_message = data.get("message", "").strip()
+        client_id = data.get("client_id") # <-- Obtenemos la ID del cliente
+
+        # --- INICIO: NUEVA VERIFICACIÓN DE LICENCIA ---
+        if not client_id:
+            return "Error: Petición inválida (falta client_id) tele", 401
+
+        try:
+            verify_url = f"{LICENSE_SERVER_URL}/verify?client_id={client_id}"
+            response = requests.get(verify_url, timeout=5)
+            if response.status_code != 200:
+                logging.warning(f"Cliente '{client_id}' con licencia inactiva o no encontrada.")
+                return "Suscripción inactiva. No pago a tiempo tele.", 403
+        except requests.RequestException as e:
+            logging.error(f"Error al contactar el servidor de licencias: {e}")
+            return "Error de servicio (no se pudo verificar licencia)", 503
+        # --- FIN: NUEVA VERIFICACIÓN DE LICENCIA ---
         
         if not user_id or not user_message:
             return "Error: faltan parámetros", 400
