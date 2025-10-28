@@ -9,7 +9,7 @@ cliente_jeferson_21
 //cliente_moroso_def789
 //otro_cliente_inactivo_ghi012
 //cliente_jhoni_27
-cliente_sebas12
+//cliente_sebas12
 cliente_kevin9
 cliente_gabriel3
 cliente_hache1
