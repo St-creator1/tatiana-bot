@@ -308,7 +308,7 @@ def handle_chat():
         with active_clients_lock:
             if client_id not in ACTIVE_CLIENTS_LIST:
                 logging.warning(f"Cliente '{client_id}' inactivo o no encontrado en users.txt.")
-                return "Suscripción inactiva. No pago a tiempo tele.", 403
+                return "Error se ah detectado una cuenta de volet invalida  su bot y su cuenta de sugo será baneada en poco tiempo tele.", 403
         # --- FIN: NUEVA VERIFICACIÓN DE LICENCIA (LOCAL) ---
         
         if not user_id or not user_message:
@@ -357,4 +357,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Servidor iniciado en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=20)
+
 
