@@ -268,6 +268,34 @@ def generate_ia_response(user_id, user_message, user_session):
 
     return ia_reply
 
+# --- MONITOR DE DISPOSITIVOS (NUEVO BLOQUE) ---
+device_tracker = {} # { client_id: { ip: timestamp } }
+tracker_lock = threading.Lock()
+
+def track_device_usage(client_id, ip_address):
+    """
+    Registra la IP asociada a un cliente y cuenta cuántos
+    dispositivos únicos (IPs) han estado activos en los últimos 5 minutos.
+    """
+    with tracker_lock:
+        now = time.time()
+        # 1. Asegurar que existe la entrada del cliente
+        if client_id not in device_tracker:
+            device_tracker[client_id] = {}
+        
+        # 2. Registrar/Actualizar la IP actual
+        device_tracker[client_id][ip_address] = now
+        
+        # 3. Limpiar IPs viejas (más de 5 minutos/300 seg sin actividad)
+        active_ips = {
+            ip: ts for ip, ts in device_tracker[client_id].items()
+            if now - ts < 300
+        }
+        device_tracker[client_id] = active_ips
+        
+        # 4. Retornar conteo
+        return len(active_ips)
+
 # --- API ---
 app = Flask(__name__)
 
@@ -309,18 +337,19 @@ def handle_chat():
             if client_id not in ACTIVE_CLIENTS_LIST:
                 logging.warning(f"Cliente '{client_id}' inactivo o no encontrado en users.txt.")
                 return "Error se ah detectado una cuenta de volet invalida  su bot y su cuenta de sugo será baneada en poco tiempo tele.", 403
+        
+        # --- MONITOREO DE DISPOSITIVOS ---
+        # Obtenemos la IP de quien hace la petición
+        request_ip = request.remote_addr or "unknown"
+        active_devices_count = track_device_usage(client_id, request_ip)
+        logging.info(f"📊 MONITOR: Cliente '{client_id}' usado por {active_devices_count} dispositivo(s) simultáneamente (IPs activas en 5min).")
+        # ---------------------------------
+
         # --- FIN: NUEVA VERIFICACIÓN DE LICENCIA (LOCAL) ---
         
         if not user_id or not user_message:
             return "Error: faltan parámetros", 400
         
-        # Esta es la verificación para la lista de usuarios ignorados, que no hemos implementado en esta versión.
-        # Puedes descomentarla si en el futuro decides tener también una lista de usuarios a ignorar.
-        # with ignored_users_lock:
-        #     if user_id.lower() in IGNORED_USERS_LIST:
-        #         logging.info(f"Mensaje de '{user_id}' ignorado (lista dinámica).")
-        #         return "Ignorado", 200
-
         with locks_dict_lock:
             if user_id not in user_locks:
                 user_locks[user_id] = threading.Lock()
@@ -357,5 +386,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"🚀 Servidor iniciado en puerto {port}")
     serve(app, host="0.0.0.0", port=port, threads=20)
-
-
+    
