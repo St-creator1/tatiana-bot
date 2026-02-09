@@ -1,19 +1,8 @@
 Este es un comentario, las líneas que empiezan con # se ignoran.
 Aquí van los IDs de tus clientes activos.
-cliente_maria_xyz123
-cliente_pedro_abc456
-cliente_stiven_123
-//cliente_adrian_245
-cliente_julian_212
-//cliente_jeferson_21
-//cliente_moroso_def789
-//otro_cliente_inactivo_ghi012
-//cliente_jhoni_27
-//cliente_sebas12
-cliente_kevin9
-//cliente_gabriel3
-//cliente_hache1
-cliente_carlos1
+cliente_st123
+cliente_kev76
+cliente_mam32
+cliente_carlo1
 //cliente_leonardo7
-cliente_yuli9
-cliente_brian
+
